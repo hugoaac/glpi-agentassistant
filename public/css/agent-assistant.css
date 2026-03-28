@@ -7,7 +7,7 @@
 #aa-panel {
   position: fixed;
   bottom: 24px;
-  right: 24px;
+  left: 24px;
   z-index: 9998;
   width: 360px;
   max-height: 82vh;
@@ -20,6 +20,16 @@
   font-size: 0.875rem;
   overflow: hidden;
   user-select: none;
+  transition: max-height 0.25s ease;
+}
+
+/* Estado minimizado — mostra apenas o header */
+#aa-panel.aa-minimized {
+  max-height: 44px;
+}
+
+#aa-panel.aa-minimized .aa-body {
+  display: none;
 }
 
 /* Dark mode */
@@ -58,6 +68,24 @@
   flex: 1;
   letter-spacing: 0.01em;
 }
+
+.aa-toggle {
+  background: rgba(255,255,255,0.15);
+  border: none;
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.65rem;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.aa-toggle:hover { background: rgba(255,255,255,0.30); }
 
 .aa-close {
   background: rgba(255,255,255,0.15);

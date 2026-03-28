@@ -3,8 +3,11 @@
 /**
  * agentassistant/ajax/analyze.php
  *
- * GET  ?ticket_id=X  → return existing suggestion (or trigger analysis if none)
- * POST {ticket_id}   → force re-analysis
+ * GET  ?ticket_id=X          → retorna sugestão em cache imediatamente;
+ *                               se não há cache, responde {queued:true} e
+ *                               roda análise em background (após flush).
+ * GET  ?ticket_id=X&poll=1   → apenas verifica cache, sem disparar análise.
+ * POST {ticket_id}           → força re-análise (síncrono, uso interno).
  */
 
 include('../../../inc/includes.php');
@@ -15,7 +18,7 @@ header('Content-Type: application/json; charset=utf-8');
 use GlpiPlugin\Agentassistant\Config;
 use GlpiPlugin\Agentassistant\SuggestionEngine;
 
-// Only technicians
+// Apenas interface central (técnicos)
 if (Session::getCurrentInterface() !== 'central') {
     http_response_code(403);
     echo json_encode(['error' => 'forbidden']);
@@ -34,7 +37,7 @@ if ($ticketId <= 0) {
     exit;
 }
 
-// Check ticket READ access
+// Verifica acesso de leitura ao ticket
 $ticket = new Ticket();
 if (!$ticket->canViewItem() || !$ticket->getFromDB($ticketId)) {
     http_response_code(403);
@@ -44,25 +47,45 @@ if (!$ticket->canViewItem() || !$ticket->getFromDB($ticketId)) {
 
 $engine = new SuggestionEngine();
 
-// POST = force re-analysis
+// ── POST: força re-análise síncrona ──────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $result = $engine->analyze($ticketId);
     echo json_encode($result ?? ['error' => 'no suggestion generated']);
     exit;
 }
 
-// GET = return cached suggestion, trigger if none exists
+// ── GET: verifica cache ───────────────────────────────────────────────────────
 $suggestion = $engine->getForTicket($ticketId);
 
-if ($suggestion === null) {
-    // Enqueue and process inline (small overhead acceptable for first load)
-    $result     = $engine->analyze($ticketId);
-    $suggestion = $result !== null ? $engine->getForTicket($ticketId) : null;
-}
-
-if ($suggestion === null) {
-    echo json_encode(['suggestion' => null]);
+if ($suggestion !== null) {
+    // Cache hit — retorna imediatamente
+    echo json_encode(['suggestion' => $suggestion]);
     exit;
 }
 
-echo json_encode(['suggestion' => $suggestion]);
+// ── Cache miss ────────────────────────────────────────────────────────────────
+// Se for polling, apenas informa que ainda não há resultado
+if (!empty($_GET['poll'])) {
+    echo json_encode(['suggestion' => null, 'queued' => true]);
+    exit;
+}
+
+// Primeira visita: responde {queued:true} AGORA e roda análise em background
+// depois que o cliente receber a resposta.
+ignore_user_abort(true);
+
+$payload = json_encode(['suggestion' => null, 'queued' => true]);
+header('Content-Length: ' . strlen($payload));
+header('Connection: close');
+echo $payload;
+
+// Flush para o cliente
+if (function_exists('fastcgi_finish_request')) {
+    fastcgi_finish_request();
+} else {
+    ob_end_flush();
+    flush();
+}
+
+// Roda análise em background (cliente já recebeu a resposta)
+$engine->analyze($ticketId);
