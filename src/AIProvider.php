@@ -59,32 +59,33 @@ class AIProvider
         $description = $ticket['description'] ?? '';
         $category    = $ticket['category']    ?? '';
 
-        $prompt  = "You are an expert IT support technician. ";
-        $prompt .= "Analyze the following IT support ticket and provide a concise, actionable solution.\n\n";
-        $prompt .= "## Ticket\n";
-        $prompt .= "**Category:** {$category}\n";
-        $prompt .= "**Title:** {$title}\n";
-        $prompt .= "**Description:**\n{$description}\n\n";
+        $prompt  = "Você é um técnico especialista em suporte de TI. ";
+        $prompt .= "Analise o chamado de suporte abaixo e forneça uma solução concisa e objetiva. ";
+        $prompt .= "Responda sempre em português do Brasil.\n\n";
+        $prompt .= "## Chamado\n";
+        $prompt .= "**Categoria:** {$category}\n";
+        $prompt .= "**Título:** {$title}\n";
+        $prompt .= "**Descrição:**\n{$description}\n\n";
 
         if (!empty($similar)) {
-            $prompt .= "## Similar Past Incidents (for reference)\n";
+            $prompt .= "## Incidentes Similares Anteriores (para referência)\n";
             foreach ($similar as $i => $s) {
                 $n = $i + 1;
                 $res = substr(strip_tags($s['resolution'] ?? ''), 0, 400);
-                $prompt .= "**#{$n} — Ticket #{$s['ticket_id']}: {$s['title']}**\n";
+                $prompt .= "**#{$n} — Chamado #{$s['ticket_id']}: {$s['title']}**\n";
                 if ($res) {
-                    $prompt .= "Resolution: {$res}\n";
+                    $prompt .= "Resolução: {$res}\n";
                 }
                 $prompt .= "\n";
             }
         }
 
-        $prompt .= "## Task\n";
-        $prompt .= "Provide a step-by-step solution for this ticket. ";
-        $prompt .= "Be concise (max 5 steps). ";
-        $prompt .= "Start directly with the solution — no preamble.\n";
-        $prompt .= "Format: use numbered steps.\n";
-        $prompt .= "If you referenced past tickets, list them as: 'Based on: Ticket #X, Ticket #Y'\n";
+        $prompt .= "## Tarefa\n";
+        $prompt .= "Forneça uma solução passo a passo para este chamado. ";
+        $prompt .= "Seja conciso (máximo 5 passos). ";
+        $prompt .= "Comece diretamente com a solução — sem introdução.\n";
+        $prompt .= "Formato: use passos numerados.\n";
+        $prompt .= "Se referenciar chamados anteriores, liste como: 'Com base em: Chamado #X, Chamado #Y'\n";
 
         return $prompt;
     }

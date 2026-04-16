@@ -89,14 +89,13 @@
       if (data && data.suggestion) {
         stopPolling();
         renderPanel(data.suggestion, ticketId);
-        expandPanel();
+        notifyReady();
       } else if (data && data.queued) {
         if (!isPoll) startPolling(ticketId);
         updateLoadingDot();
       } else {
         stopPolling();
         renderEmpty();
-        expandPanel();
       }
     })
     .catch(function () {
@@ -113,7 +112,6 @@
       if (pollCount > MAX_POLLS) {
         stopPolling();
         renderEmpty();
-        expandPanel();
         return;
       }
       fetchSuggestion(ticketId, true);
@@ -132,6 +130,14 @@
     panel.classList.remove('aa-minimized');
     var btn = panel.querySelector('.aa-toggle');
     if (btn) btn.innerHTML = '&#x25BC;';
+  }
+
+  function notifyReady() {
+    var panel = document.getElementById(PANEL_ID);
+    if (!panel) return;
+    panel.classList.add('aa-ready');
+    var icon = panel.querySelector('.aa-icon');
+    if (icon) icon.title = 'Sugestão disponível — clique para expandir';
   }
 
   function togglePanel() {

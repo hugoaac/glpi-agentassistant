@@ -70,22 +70,22 @@ if (!empty($_GET['poll'])) {
     exit;
 }
 
-// Primeira visita: responde {queued:true} AGORA e roda análise em background
-// depois que o cliente receber a resposta.
-ignore_user_abort(true);
+// Primeira visita: enfileira análise e responde {queued:true}.
+// Se fastcgi_finish_request está disponível, roda análise inline após liberar a resposta.
+// Caso contrário, o cron agentassistantProcessQueue vai processar a fila.
+global $DB;
+$DB->insertOrIgnore('glpi_plugin_agentassistant_queue', [
+    'tickets_id'     => $ticketId,
+    'operation'      => 'analyze',
+    'priority'       => 5,
+    'attempts'       => 0,
+    'date_scheduled' => date('Y-m-d H:i:s'),
+]);
 
-$payload = json_encode(['suggestion' => null, 'queued' => true]);
-header('Content-Length: ' . strlen($payload));
-header('Connection: close');
-echo $payload;
+echo json_encode(['suggestion' => null, 'queued' => true]);
 
-// Flush para o cliente
 if (function_exists('fastcgi_finish_request')) {
+    ignore_user_abort(true);
     fastcgi_finish_request();
-} else {
-    ob_end_flush();
-    flush();
+    $engine->analyze($ticketId);
 }
-
-// Roda análise em background (cliente já recebeu a resposta)
-$engine->analyze($ticketId);

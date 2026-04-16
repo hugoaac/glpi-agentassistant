@@ -32,6 +32,16 @@
   display: none;
 }
 
+/* Pulso sutil no header quando sugestão está pronta (painel minimizado) */
+#aa-panel.aa-minimized.aa-ready .aa-header {
+  animation: aa-pulse 2s ease-in-out 3;
+}
+
+@keyframes aa-pulse {
+  0%, 100% { box-shadow: none; }
+  50%       { box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.4); }
+}
+
 /* Dark mode */
 @media (prefers-color-scheme: dark) {
   #aa-panel {
