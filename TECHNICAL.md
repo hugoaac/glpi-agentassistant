@@ -29,7 +29,7 @@ O plugin oferece:
 - **Fallback de IA** — Sugestões via Claude API quando similaridade é baixa
 - **Aprendizado contínuo** — Pesos ajustados pelo feedback dos técnicos (+0.10 / -0.05)
 - **Detecção de recorrências** — Clusterização automática e criação de Problemas GLPI
-- **Painel flutuante** — Interface JS injetada na tela de chamado, arrastável
+- **Painel flutuante** — Interface JS injetada na tela de chamado, sempre minimizado, arrastável
 
 ---
 
@@ -79,7 +79,7 @@ Configurações chave/valor com cache em memória por requisição.
 
 ### `glpi_plugin_agentassistant_queue`
 
-Fila de análise assíncrona de chamados.
+Fila de análise para reprocessamento via cron (tickets atualizados via hook).
 
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
@@ -91,6 +91,8 @@ Fila de análise assíncrona de chamados.
 | date_scheduled | DATETIME | Timestamp de inserção |
 
 **Constraint única:** `(tickets_id, operation)` — evita entradas duplicadas.
+
+**Enfileiramento:** feito via `INSERT ... ON DUPLICATE KEY UPDATE` diretamente em `hook.php` (`_agentassistant_enqueue()`). O método `DB::insertOrIgnore()` não existe no GLPI — usar sempre raw SQL ou `$DB->doQuery()`.
 
 ### `glpi_plugin_agentassistant_embeddings`
 
@@ -210,11 +212,13 @@ generateSuggestion(array $ticket, array $similar = []): ?array
 4. Loga chamada em `glpi_plugin_agentassistant_logs`
 5. Retorna `null` em erros de rede/API
 
+**Idioma:** prompt inteiramente em português do Brasil. A instrução explícita `"Responda sempre em português do Brasil"` garante que o modelo responda no idioma correto independente do conteúdo do chamado.
+
 **Formato do prompt:**
 - Categoria, título, descrição do chamado
-- Até 5 soluções de chamados similares
-- Solicita solução em 5 passos
-- Pede referência "Com base em: Chamado #X, #Y"
+- Até 5 soluções de chamados similares (label: `Incidentes Similares Anteriores`)
+- Solicita solução em até 5 passos numerados
+- Pede referência `"Com base em: Chamado #X, Chamado #Y"`
 
 ---
 
@@ -329,12 +333,24 @@ $PLUGIN_HOOKS['add_css']['agentassistant'] = ...;
 $PLUGIN_HOOKS['add_javascript']['agentassistant'] = ...;
 ```
 
+**`_agentassistant_enqueue(int $ticketId, int $priority)`** — helper interno que enfileira via:
+```sql
+INSERT INTO glpi_plugin_agentassistant_queue (...)
+VALUES (...)
+ON DUPLICATE KEY UPDATE priority = LEAST(priority, ?), date_scheduled = NOW()
+```
+> Não usar `$DB->insertOrIgnore()` — método inexistente no GLPI. Usar `$DB->doQuery()` com raw SQL.
+
 ### Cron (`inc/cron.class.php`)
 
 | Tarefa | Frequência | Descrição |
 |--------|-----------|-----------|
 | `agentassistantProcessQueue` | 5 min | Processa até 20 itens da fila; máx 3 tentativas |
 | `agentassistantDetectRecurrences` | 2 horas | Detecta clusters e cria Problemas |
+
+**Registro:** `PluginAgentassistantCron::install()` é chamado tanto em `plugin_agentassistant_install()` (instalação) quanto em `plugin_init_agentassistant()` (init, idempotente). Isso garante que as tarefas sejam registradas no BD do GLPI mesmo sem reinstalar o plugin.
+
+> `CronTask::register()` é idempotente — pode ser chamado a cada init sem efeitos colaterais.
 
 ### Menu Admin (`inc/menu.class.php`)
 
@@ -346,13 +362,26 @@ Entrada em Setup → Agent Assistant com acesso por direito `'config'` (READ/UPD
 
 ### `GET /ajax/analyze.php?ticket_id=X`
 
-Busca sugestão existente ou enfileira análise.
+**Cache hit** (sugestão já existe no BD):
+```json
+{"suggestion": { "id": 1, "confidence_score": 85, ... }}
+```
+Retorna imediatamente.
 
-**Cache hit:** retorna `{"suggestion": {...}}` imediatamente.
+**Cache miss — primeira visita** (sem `&poll=1`):
+Roda `SuggestionEngine::analyze()` de forma **síncrona** na mesma requisição e retorna o resultado assim que concluir. O painel exibe o spinner durante o processamento (tipicamente 2–10 segundos).
+```json
+{"suggestion": { ... }}   // análise concluída
+{"suggestion": null}       // nenhuma sugestão gerada (sem similares e sem API key)
+```
 
-**Cache miss:** responde `{"suggestion": null, "queued": true}`, continua análise em background (`fastcgi_finish_request`).
+**Cache miss — polling** (com `&poll=1`):
+Usado pelo JS para verificar se o cron já processou uma atualização de chamado.
+```json
+{"suggestion": null, "queued": true}
+```
 
-**Com `&poll=1`:** apenas verifica cache, não enfileira.
+> **Compatibilidade GLPI 11 / Symfony:** não usar `ob_end_flush()` — fecha o buffer do Symfony e gera warning `"Unexpected output detected"`. O processamento em background via `fastcgi_finish_request` foi removido por ser pouco confiável; a análise é sempre síncrona na primeira visita.
 
 ### `POST /ajax/analyze.php`
 
@@ -383,13 +412,20 @@ IIFE que expõe `window.AAPanel`.
 
 | Função | Descrição |
 |--------|-----------|
-| `init()` | Entry point; detecta ID do chamado, injeta painel |
+| `init()` | Entry point; detecta ID do chamado, injeta painel sempre minimizado |
 | `extractTicketId()` | Parseia URL `/Ticket/{id}` ou `?id=` |
-| `injectPanel()` | Cria elemento fixo bottom-left, draggável |
-| `fetchSuggestion()` | AJAX com polling automático a cada 6s (máx 20 tentativas) |
+| `injectPanel()` | Cria elemento fixo bottom-left, draggável, classe `aa-minimized` sempre presente |
+| `fetchSuggestion()` | AJAX — aguarda resposta síncrona; inicia polling apenas se `queued: true` |
 | `renderPanel()` | Barra de confiança, Markdown simplificado, botões de feedback |
+| `notifyReady()` | Adiciona classe `aa-ready` ao painel → dispara animação de pulso no header |
 | `makeDraggable()` | Drag por mousedown/mousemove no header |
 | `mdToHtml()` | Converte `##`, `**`, `- item`, listas numeradas para HTML |
+
+**Comportamento do painel:**
+- Sempre inicia **minimizado** (classe `aa-minimized`) — nunca expande automaticamente
+- Ao receber sugestão: adiciona classe `aa-ready` → header pulsa 3× para notificar o técnico
+- O técnico expande manualmente clicando no botão ▲
+- "Ignorar" salva chave em `sessionStorage` → painel não reaparece no mesmo chamado/sessão
 
 **API pública:**
 ```js
@@ -398,14 +434,13 @@ AAPanel.toggle()
 AAPanel.feedback(sid, tid, action)
 ```
 
-**Sessão:** sugestão dispensada salva em `sessionStorage` para não reaparecer.
-
 ### `public/css/agent-assistant.css`
 
 | Classe | Descrição |
 |--------|-----------|
 | `#aa-panel` | Container fixo 360px, bottom-left |
-| `.aa-minimized` | Colapsa para o header |
+| `.aa-minimized` | Colapsa para o header (max-height: 44px) |
+| `.aa-minimized.aa-ready` | Pulso no header 3× ao receber sugestão (animação `aa-pulse`) |
 | `.aa-header` | Gradiente roxo (#4f46e5–#7c3aed), arrastável |
 | `.aa-conf-bar` | Barra de progresso animada de confiança |
 | `.aa-conf-high/med/low` | Verde/amarelo/vermelho |
@@ -417,35 +452,37 @@ Suporte a dark mode (`prefers-color-scheme`) e responsivo (< 480px).
 
 ## Fluxos de Dados
 
-### Análise de Chamado
-
-```
-Chamado criado/atualizado
-  → hook item_add/item_update
-  → _agentassistant_enqueue() → INSERT/UPDATE queue
-  → Cron (5 min) → SuggestionEngine::analyze()
-      ├─ EmbeddingService::embedTicket()
-      ├─ SimilarityEngine::findSimilar()
-      ├─ Decisão: confiança ≥ 50%?
-      │   ├─ SIM: sugestão de similares
-      │   └─ NÃO: AIProvider::generateSuggestion() (Claude)
-      ├─ Store → glpi_plugin_agentassistant_suggestions
-      ├─ Confiança ≥ 80%: adiciona followup privado
-      └─ Log → glpi_plugin_agentassistant_logs
-  → DELETE from queue (sucesso)
-```
-
-### Interação do Técnico
+### Análise na Abertura do Chamado (principal)
 
 ```
 Técnico abre formulário de chamado
-  → JS init() → injectPanel (minimizado)
-  → GET /ajax/analyze.php?ticket_id=X
-      ├─ Cache HIT: renderPanel() → expande
-      └─ Cache MISS: {queued:true} → polling 6s × 20
+  → JS init() → injectPanel (minimizado, spinner)
+  → GET /ajax/analyze.php?ticket_id=X  (sem poll)
+      ├─ Cache HIT → retorna sugestão imediatamente
+      └─ Cache MISS → SuggestionEngine::analyze() síncrono
+           ├─ EmbeddingService::embedTicket()
+           ├─ SimilarityEngine::findSimilar()
+           ├─ Decisão: confiança ≥ 50%?
+           │   ├─ SIM: sugestão de similares
+           │   └─ NÃO: AIProvider::generateSuggestion() (Claude API)
+           ├─ Store → glpi_plugin_agentassistant_suggestions
+           ├─ Confiança ≥ 80%: adiciona followup privado
+           └─ Log → glpi_plugin_agentassistant_logs
+  → JS recebe {suggestion: {...}} → renderPanel()
+  → header pulsa 3× (aa-ready) → técnico expande quando quiser
   → Técnico clica "Utilizei" ou "Ignorar"
-  → POST /ajax/feedback.php
-  → LearningEngine::recordFeedback() → ajusta pesos
+  → POST /ajax/feedback.php → LearningEngine::recordFeedback()
+```
+
+### Reprocessamento por Atualização (cron)
+
+```
+Chamado atualizado (título/desc/categoria)
+  → hook item_update
+  → _agentassistant_enqueue() → INSERT ... ON DUPLICATE KEY UPDATE queue
+  → Cron (5 min) → cronAgentassistantProcessQueue()
+      → SuggestionEngine::analyze() → store → DELETE from queue
+  → Próxima abertura do chamado: cache hit, retorno imediato
 ```
 
 ### Detecção de Recorrências
@@ -467,7 +504,7 @@ Cron (2h) → RecurrenceDetector::run()
 | Chave | Tipo | Padrão | Descrição |
 |-------|------|--------|-----------|
 | `enabled` | bool | true | Habilitar plugin |
-| `ai_api_key` | string | '' | Chave Claude API |
+| `ai_api_key` | string | '' | Chave Claude API (Anthropic) |
 | `ai_model` | string | claude-sonnet-4-6 | Modelo de IA |
 | `confidence_high` | int | 80 | Limiar alta confiança (%) |
 | `confidence_medium` | int | 50 | Limiar média confiança (%) |
@@ -479,6 +516,8 @@ Cron (2h) → RecurrenceDetector::run()
 | `recurrence_days` | int | 5 | Janela de detecção (dias) |
 | `max_tokens` | int | 800 | Limite de tokens Claude |
 
+> Se `ai_api_key` não estiver configurado e não houver chamados similares, `analyze()` retorna `null` e nenhuma sugestão é armazenada.
+
 ---
 
 ## Segurança e Performance
@@ -489,16 +528,22 @@ Cron (2h) → RecurrenceDetector::run()
 - **Autenticação:** `Session::checkLoginUser()` em todos os endpoints AJAX
 - **Autorização:** `Session::checkRight('config', UPDATE)` nas páginas admin
 - **Permissão por chamado:** `$ticket->canViewItem()` antes de retornar sugestão
-- **SQL:** usa query builder GLPI (prepared-style)
+- **SQL:** usa query builder GLPI (`$DB->request`, `$DB->insert`, `$DB->update`) ou raw SQL via `$DB->doQuery()` quando necessário
 - **Interface:** JS/CSS injetados apenas na interface central (não self-service)
 
 ### Performance
 
 - **Cache de embeddings:** MD5 evita re-embedar texto não modificado
 - **Cache de configuração:** em memória por requisição (sem queries repetidas)
-- **Background processing:** `analyze.php` retorna imediatamente, processa em background
+- **Análise síncrona:** primeira visita aguarda resultado direto (2–10s); sem dependência de cron para a UX principal
 - **Vetores esparsos:** apenas top 60 termos + fallback Jaccard para vetores esparsos
 - **Paginação:** logs exibem 50 linhas/página
+
+### Compatibilidade GLPI 11 (Symfony)
+
+- Não usar `ob_end_flush()` — interfere no buffer do `LegacyFileLoadController`
+- Não usar `$DB->insertOrIgnore()` — método inexistente; usar raw SQL com `ON DUPLICATE KEY UPDATE`
+- Não chamar funções de `hook.php` diretamente em outros arquivos PHP — risco de redefinição de funções
 
 ---
 

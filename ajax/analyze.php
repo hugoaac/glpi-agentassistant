@@ -64,28 +64,14 @@ if ($suggestion !== null) {
 }
 
 // ── Cache miss ────────────────────────────────────────────────────────────────
-// Se for polling, apenas informa que ainda não há resultado
+// Polling: apenas verifica se a análise já terminou (via cron/hook)
 if (!empty($_GET['poll'])) {
     echo json_encode(['suggestion' => null, 'queued' => true]);
     exit;
 }
 
-// Primeira visita: enfileira análise e responde {queued:true}.
-// Se fastcgi_finish_request está disponível, roda análise inline após liberar a resposta.
-// Caso contrário, o cron agentassistantProcessQueue vai processar a fila.
-global $DB;
-$DB->insertOrIgnore('glpi_plugin_agentassistant_queue', [
-    'tickets_id'     => $ticketId,
-    'operation'      => 'analyze',
-    'priority'       => 5,
-    'attempts'       => 0,
-    'date_scheduled' => date('Y-m-d H:i:s'),
-]);
+// Primeira visita: roda análise de forma síncrona e retorna resultado imediatamente.
+$result     = $engine->analyze($ticketId);
+$suggestion = $result !== null ? $engine->getForTicket($ticketId) : null;
 
-echo json_encode(['suggestion' => null, 'queued' => true]);
-
-if (function_exists('fastcgi_finish_request')) {
-    ignore_user_abort(true);
-    fastcgi_finish_request();
-    $engine->analyze($ticketId);
-}
+echo json_encode(['suggestion' => $suggestion]);

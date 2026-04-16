@@ -163,6 +163,8 @@ function plugin_agentassistant_install(): bool
         ") or die($DB->error());
     }
 
+    PluginAgentassistantCron::install();
+
     return true;
 }
 

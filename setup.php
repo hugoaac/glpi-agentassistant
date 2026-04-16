@@ -83,6 +83,7 @@ function plugin_init_agentassistant(): void
 
     // ── Cron ──────────────────────────────────────────────────────────────
     $PLUGIN_HOOKS['cron']['agentassistant'] = 'PluginAgentassistantCron';
+    PluginAgentassistantCron::install();
 
     // ── CSS / JS: injetar apenas em páginas de ticket ─────────────────────
     $uri = $_SERVER['REQUEST_URI'] ?? '';
