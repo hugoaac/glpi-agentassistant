@@ -49,6 +49,7 @@ $engine = new SuggestionEngine();
 
 // ── POST: força re-análise síncrona ──────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    Session::checkCSRF($_SERVER);
     $result = $engine->analyze($ticketId);
     echo json_encode($result ?? ['error' => 'no suggestion generated']);
     exit;
